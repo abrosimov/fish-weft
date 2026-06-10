@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  syntax:
+    name: Fish syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fish
+        run: |
+          sudo apt-add-repository -y ppa:fish-shell/release-3
+          sudo apt-get update
+          sudo apt-get install -y fish
+          fish --version
+
+      - name: Syntax-check every .fish file
+        shell: fish {0}
+        run: |
+          set -l failed 0
+          for f in (find functions completions conf.d tests -type f -name '*.fish' 2>/dev/null)
+              if fish -n $f
+                  echo "ok   $f"
+              else
+                  echo "fail $f"
+                  set failed (math $failed + 1)
+              end
+          end
+          if test $failed -gt 0
+              echo "$failed file(s) failed syntax check"
+              exit 1
+          end
+
+  tests:
+    name: Fishtape unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fish
+        run: |
+          sudo apt-add-repository -y ppa:fish-shell/release-3
+          sudo apt-get update
+          sudo apt-get install -y fish
+
+      - name: Install fisher + fishtape
+        shell: fish {0}
+        run: |
+          curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish | source
+          and fisher install jorgebucaran/fisher
+          and fisher install jorgebucaran/fishtape
+
+      - name: Run fishtape suite
+        shell: fish {0}
+        run: |
+          fishtape tests/*.fish
+
+  smoke:
+    name: Fisher install smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fish
+        run: |
+          sudo apt-add-repository -y ppa:fish-shell/release-3
+          sudo apt-get update
+          sudo apt-get install -y fish
+
+      - name: Install fisher
+        shell: fish {0}
+        run: |
+          curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish | source
+          and fisher install jorgebucaran/fisher
+
+      - name: Install fish-weft from checkout
+        shell: fish {0}
+        run: |
+          fisher install $GITHUB_WORKSPACE
+
+      - name: Verify expected functions are registered
+        shell: fish {0}
+        run: |
+          set -l required proj wt k kpf kms \
+              _tide_item_proj_pwd \
+              __fish_weft_workspace_root \
+              _fish_weft_tide_insert_proj_pwd \
+              _fish_weft_tide_restore_pwd
+          set -l missing
+          for fn in $required
+              functions -q $fn; or set -a missing $fn
+          end
+          if test (count $missing) -gt 0
+              echo "missing functions: $missing"
+              exit 1
+          end
+          echo "registered: $required"
+
+      - name: Verify proj prints usage and exits 2 with no args
+        shell: fish {0}
+        run: |
+          set -gx AION_AUTOPOIESEON /tmp/wf-smoke
+          proj
+          set -l rc $status
+          if test $rc -ne 2
+              echo "proj with no args returned $rc, expected 2"
+              exit 1
+          end
+
+      - name: Verify fisher remove cleans up
+        shell: fish {0}
+        run: |
+          fisher remove $GITHUB_WORKSPACE
+          if functions -q proj
+              echo "proj still registered after remove"
+              exit 1
+          end
