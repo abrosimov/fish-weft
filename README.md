@@ -93,6 +93,7 @@ $AION_AUTOPOIESEON/<project>/
 | `proj new <name>` | Create empty `<project>/base/` with `git init`. |
 | `proj convert <name>` | Migrate an old-style single-tree project to the new `base/` layout, preserving root-level `CLAUDE.md` / `.claude/`. |
 | `proj hooks` | Re-install hooks (from `~/.local/share/proj/hooks/`) into the current project. |
+| `proj gc [--yes]` | Aggressive `git gc` on the current project's repo (`worktree prune` + `reflog expire --expire=now --all` + `gc --aggressive --prune=now`). Destructive — drops reflog and unreachable objects, so undo for recent `reset` / `checkout` is gone. Interactive confirmation by default; `--yes` / `-y` skips. Works on both new- and old-style layouts. |
 | `proj ls` | List every directory under `$AION_AUTOPOIESEON`. |
 | `proj <name>` | `cd` into a project (drops you in `base/` if it exists). |
 
@@ -100,9 +101,9 @@ $AION_AUTOPOIESEON/<project>/
 
 | Command | What it does |
 |---------|--------------|
-| `proj wt add <branch> [--from <base>]` | Create a worktree at `<project>/<branch>/`. Tracks existing remote branches automatically. |
-| `proj wt fork <branch>` | Fork a new worktree from the current HEAD. |
-| `proj wt sync` | Detect upstream and merge `origin/<upstream>` into the current worktree. |
+| `proj wt add <branch> [--from <base>]` | Create a worktree at `<project>/<branch>/`. Tracks existing remote branches automatically. Stamps `branch.<name>.wt-parent` (see [wt-parent](#wt-parent-tracking)) for newly created branches and for local-exists branches without `@{upstream}`. |
+| `proj wt fork <branch>` | Fork a new worktree from the current HEAD. Stamps `wt-parent` = source branch (skipped on detached HEAD). |
+| `proj wt sync` | Merge sync-source into the current worktree. Priority: `branch.<name>.wt-parent` (git config) → `@{upstream}` → whitelist (`main` / `master` / `release-*` / `develop`) chosen by merge-base recency. If the resolved parent has `origin/<parent>`, fetches + merges from origin; otherwise merges the local ref without fetching. |
 | `proj wt push` | `git push -u origin <current-branch>`. |
 | `proj wt ls` | List worktrees (delegates to `git worktree list`). |
 | `proj wt status` | Per-worktree summary with ahead-of-default count and `gh pr view` state. |
@@ -112,6 +113,24 @@ $AION_AUTOPOIESEON/<project>/
 | `proj wt <name>` | `cd` into a worktree directory (accepts both `feature/login` and `feature-login`). |
 
 Branch names containing `/` get sanitised in the directory: `feature/login` → `<project>/feature-login/`. `wt rm` and `wt <name>` mirror the sanitisation, so the original slash form keeps working.
+
+### `wt-parent` tracking
+
+When you fork a feature branch off another feature branch (not `main` / `master`), git provides no built-in way to remember the lineage: `@{upstream}` only points at a remote ref, so `wt sync` would otherwise fall back to the whitelist and merge `origin/main` instead of the actual parent. `proj wt add` and `proj wt fork` solve this by stamping `branch.<name>.wt-parent` in git config at creation time:
+
+- `wt add <new-branch>` (no existing branch) → stamps `wt-parent` = whichever branch `base/` is currently on.
+- `wt add <existing-local-branch>` (branch exists locally, no `@{upstream}`) → stamps the same.
+- `wt add <existing-remote-branch>` → no stamp (`--track` sets `@{upstream}` instead).
+- `wt fork <new-branch>` → stamps `wt-parent` = the source worktree's branch.
+
+`wt sync` resolves the merge source in priority order: `wt-parent` → `@{upstream}` → whitelist. If the resolved parent has `origin/<parent>`, sync fetches and merges from origin; otherwise it merges the local ref without fetching, so feature-on-feature work with an unpushed parent still syncs cleanly.
+
+To stamp or change the parent manually:
+
+```fish
+git config branch.<name>.wt-parent <parent-branch>
+git config --unset branch.<name>.wt-parent
+```
 
 ### `.wtfiles` manifest
 

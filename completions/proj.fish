@@ -8,6 +8,7 @@ complete -c proj -n '__fish_use_subcommand' -a clone -d 'Clone a repo into base/
 complete -c proj -n '__fish_use_subcommand' -a new -d 'Create empty project with git init'
 complete -c proj -n '__fish_use_subcommand' -a convert -d 'Convert old-style to base/ layout'
 complete -c proj -n '__fish_use_subcommand' -a hooks -d 'Install git hooks to current project'
+complete -c proj -n '__fish_use_subcommand' -a gc -d 'Aggressive git gc (destructive: drops reflog + unreachable objects)'
 complete -c proj -n '__fish_use_subcommand' -a ls -d 'List projects'
 complete -c proj -n '__fish_use_subcommand' -a wt -d 'Worktree management'
 
@@ -17,7 +18,7 @@ complete -c proj -n '__fish_use_subcommand' -a '(set -l root (__fish_weft_worksp
 # proj wt subcommands
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a add -d 'Create worktree (tracks remote if exists)'
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a fork -d 'Fork from current worktree'
-complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a sync -d 'Merge upstream into current worktree'
+complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a sync -d 'Merge wt-parent (or @{upstream}, or whitelist) into current worktree'
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a push -d 'Push current branch to origin'
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a ls -d 'List worktrees'
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a status -d 'Show worktrees with PR status'
@@ -40,6 +41,9 @@ complete -c proj -n '__proj_seen_wt_rm' -s f -l force -d 'Force remove worktree 
 
 # proj wt clean: --age flag
 complete -c proj -n '__proj_seen_wt_clean' -l age -d 'Stale-worktree threshold in days (default 30, 0 disables)'
+
+# proj gc: --yes flag
+complete -c proj -n '__proj_seen_gc' -s y -l yes -d 'Skip interactive confirmation'
 
 # proj wt fix-claude-links: --apply flag and project names as positional arg
 complete -c proj -n '__proj_seen_wt_fix_claude_links' -l apply -d 'Perform changes (default is dry-run)'

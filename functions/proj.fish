@@ -109,6 +109,18 @@ function __proj_wt_link_claude --argument-names project_dir base_dir wt_path
     end
 end
 
+# Helper: record the logical parent branch for `wt sync` to consult.
+# Stores `branch.<name>.wt-parent` in the worktree's git config. The value
+# wins over @{upstream} and the whitelist fallback in `wt sync`. Skipped
+# when parent is empty or "HEAD" (detached source) so we never stamp a
+# meaningless ref.
+function __proj_wt_stamp_parent --argument-names wt_path branch parent
+    test -z "$parent"; and return 0
+    test "$parent" = HEAD; and return 0
+    git -C "$wt_path" config "branch.$branch.wt-parent" "$parent"
+    and echo "  wt-parent: $branch ← $parent"
+end
+
 # Helper: seed a new worktree with gitignored files shared from base
 # Uses .wtfiles manifest if present, otherwise prompts interactively.
 # Default verb is `link` (symlink); explicit `copy` is the escape hatch
@@ -367,12 +379,13 @@ function proj --description "Project management: clone repos, cd into projects"
         echo "  proj new <name>    — create empty project with git init"
         echo "  proj convert <name>— convert old-style layout to base/ structure"
         echo "  proj hooks         — install git hooks to current project"
+        echo "  proj gc [--yes]    — aggressive git gc on current project (drops reflog + unreachable objects)"
         echo "  proj ls            — list projects"
         echo "  proj <name>        — cd into project directory"
         echo ""
-        echo "  proj wt add <branch> [--from base] — create worktree"
-        echo "  proj wt fork <branch>              — fork from current worktree"
-        echo "  proj wt sync                       — merge upstream into current worktree"
+        echo "  proj wt add <branch> [--from base] — create worktree (stamps wt-parent)"
+        echo "  proj wt fork <branch>              — fork from current worktree (stamps wt-parent)"
+        echo "  proj wt sync                       — merge wt-parent (or @{upstream}, or whitelist) into current worktree"
         echo "  proj wt push                       — push current branch to origin"
         echo "  proj wt ls                         — list worktrees"
         echo "  proj wt status                     — show worktrees with PR status"
@@ -574,6 +587,64 @@ function proj --description "Project management: clone repos, cd into projects"
 
             __proj_install_hooks "$base_dir"
 
+        case gc
+            # Aggressive maintenance on the current project's git dir.
+            # Detects new-style (base/) and old-style (project root) layouts.
+            # Destructive: drops reflog and unreachable objects permanently —
+            # interactive confirmation unless --yes / -y is passed.
+            set -l rel (string replace "$workspace_root/" '' -- $PWD)
+            if test "$rel" = "$PWD"
+                echo "Not inside the workspace root ($workspace_root)"
+                return 2
+            end
+            set -l project (string split '/' -- $rel)[1]
+            set -l project_dir "$workspace_root/$project"
+
+            set -l gc_target
+            if test -d "$project_dir/base/.git"
+                set gc_target "$project_dir/base"
+            else if test -d "$project_dir/.git"
+                set gc_target "$project_dir"
+            else
+                echo "Not a git repository: $project_dir"
+                return 2
+            end
+
+            set -l auto_yes false
+            for arg in $argv
+                switch $arg
+                    case -y --yes
+                        set auto_yes true
+                    case '*'
+                        echo "Unknown flag: $arg"
+                        echo "Usage: proj gc [--yes]"
+                        return 2
+                end
+            end
+
+            set -l size_before (du -sh "$gc_target/.git" 2>/dev/null | awk '{print $1}')
+            echo "Project: $project ($gc_target/.git, $size_before)"
+            echo "Will run:"
+            echo "  git worktree prune"
+            echo "  git reflog expire --expire=now --all   ← destructive: reflog history dropped"
+            echo "  git gc --aggressive --prune=now         ← destructive: unreachable objects pruned"
+
+            if test "$auto_yes" != true
+                read -P "Proceed? [y/N]: " answer
+                if not string match -qi y -- "$answer"
+                    echo "Aborted."
+                    return 1
+                end
+            end
+
+            git -C "$gc_target" worktree prune
+            and git -C "$gc_target" reflog expire --expire=now --all
+            and git -C "$gc_target" gc --aggressive --prune=now
+            or return $status
+
+            set -l size_after (du -sh "$gc_target/.git" 2>/dev/null | awk '{print $1}')
+            echo "Done. .git size: $size_before → $size_after"
+
         case wt
             # `fix-claude-links` is project-agnostic — handle before PWD-based detection.
             if test (count $argv) -ge 1 -a "$argv[1]" = fix-claude-links
@@ -637,9 +708,9 @@ function proj --description "Project management: clone repos, cd into projects"
 
             if test (count $argv) -lt 1
                 echo "Usage:"
-                echo "  proj wt add <branch> [--from base] — create worktree (tracks remote if exists)"
-                echo "  proj wt fork <branch>              — fork from current worktree"
-                echo "  proj wt sync                       — merge upstream into current worktree"
+                echo "  proj wt add <branch> [--from base] — create worktree (stamps wt-parent; tracks remote if exists)"
+                echo "  proj wt fork <branch>              — fork from current worktree (stamps wt-parent)"
+                echo "  proj wt sync                       — merge wt-parent (or @{upstream}, or whitelist) into current worktree"
                 echo "  proj wt push                       — push current branch to origin"
                 echo "  proj wt ls                         — list worktrees"
                 echo "  proj wt status                     — show worktrees with PR status"
@@ -706,20 +777,39 @@ function proj --description "Project management: clone repos, cd into projects"
                         return 1
                     end
 
-                    # Check if branch already exists (local, remote, or create new)
+                    # Track which path we took so we can decide wt-parent stamping below.
+                    set -l add_path
                     if git -C "$base_dir" show-ref --verify --quiet "refs/heads/$branch"
                         # Local branch exists
                         git -C "$base_dir" worktree add "$wt_path" "$branch"
+                        and set add_path local
                     else if git -C "$base_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"
                         # Remote branch exists — create tracking branch
                         git -C "$base_dir" fetch origin "$branch"
                         git -C "$base_dir" worktree add --track -b "$branch" "$wt_path" "origin/$branch"
+                        and set add_path remote
                     else
                         # Neither exists — create new branch from base
                         git -C "$base_dir" worktree add -b "$branch" "$wt_path" "$base_branch"
+                        and set add_path new
                     end
 
                     and echo "Ready: $wt_path"
+
+                    # Stamp wt-parent so `wt sync` knows what to merge from.
+                    #   new   → just forked from $base_branch; parent is unambiguous.
+                    #   local without @{upstream} → $base_branch is our best heuristic.
+                    #   local with @{upstream}    → leave sync to use that tracking.
+                    #   remote → --track set @{upstream}=origin/<branch>; no stamp needed.
+                    if test "$add_path" = new
+                        __proj_wt_stamp_parent "$wt_path" "$branch" "$base_branch"
+                    else if test "$add_path" = local
+                        set -l existing_upstream (git -C "$base_dir" rev-parse --abbrev-ref "$branch@{upstream}" 2>/dev/null)
+                        if test -z "$existing_upstream"
+                            __proj_wt_stamp_parent "$wt_path" "$branch" "$base_branch"
+                        end
+                    end
+
                     # Seed worktree from .wtfiles manifest (or interactive prompt)
                     __proj_wt_copy_shared "$base_dir" "$wt_path"
                     # Inherit wrapper-level .claude/ and CLAUDE.md (symlinks by default).
@@ -734,6 +824,7 @@ function proj --description "Project management: clone repos, cd into projects"
 
                     set -l branch $argv[1]
                     set -l source_commit (git rev-parse HEAD 2>/dev/null)
+                    set -l source_branch (git rev-parse --abbrev-ref HEAD 2>/dev/null)
                     if test -z "$source_commit"
                         echo "Cannot resolve HEAD — are you inside a git worktree?"
                         return 1
@@ -750,7 +841,15 @@ function proj --description "Project management: clone repos, cd into projects"
                     git -C "$base_dir" worktree add -b "$branch" "$wt_path" "$source_commit"
                     or return $status
 
-                    echo "Forked from $(git rev-parse --abbrev-ref HEAD 2>/dev/null; or echo $source_commit) → $wt_path"
+                    set -l source_label $source_branch
+                    if test -z "$source_label" -o "$source_label" = HEAD
+                        set source_label $source_commit
+                    end
+                    echo "Forked from $source_label → $wt_path"
+
+                    # Stamp wt-parent: fork captures the source branch by definition.
+                    # The helper skips silently on detached HEAD ("HEAD").
+                    __proj_wt_stamp_parent "$wt_path" "$branch" "$source_branch"
 
                     __proj_wt_copy_shared "$base_dir" "$wt_path"
                     __proj_wt_link_claude "$project_dir" "$base_dir" "$wt_path"
@@ -764,12 +863,32 @@ function proj --description "Project management: clone repos, cd into projects"
                         return 2
                     end
 
-                    # Detect upstream: tracking branch > nearest remote branch by merge-base
+                    set -l current_branch (git branch --show-current 2>/dev/null)
+
+                    # Resolve sync source in priority order:
+                    #   1. branch.<name>.wt-parent — explicit parent stamped at wt add/fork
+                    #   2. @{upstream} — git-native tracking branch
+                    #   3. whitelist (main/master/release-*/develop) by merge-base recency
                     set -l upstream
-                    set -l tracking (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
-                    if test -n "$tracking"
-                        set upstream (string replace 'origin/' '' -- $tracking)
-                    else
+                    set -l upstream_source
+
+                    if test -n "$current_branch"
+                        set -l wt_parent (git config --get "branch.$current_branch.wt-parent" 2>/dev/null)
+                        if test -n "$wt_parent"
+                            set upstream $wt_parent
+                            set upstream_source wt-parent
+                        end
+                    end
+
+                    if test -z "$upstream"
+                        set -l tracking (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+                        if test -n "$tracking"
+                            set upstream (string replace 'origin/' '' -- $tracking)
+                            set upstream_source upstream
+                        end
+                    end
+
+                    if test -z "$upstream"
                         set -l best_time 0
                         for ref in (git branch -r --list 'origin/main' 'origin/master' 'origin/release-*' 'origin/develop' 2>/dev/null)
                             set ref (string trim -- $ref)
@@ -779,24 +898,38 @@ function proj --description "Project management: clone repos, cd into projects"
                             if test "$mb_time" -gt "$best_time"
                                 set best_time $mb_time
                                 set upstream (string replace 'origin/' '' -- $ref)
+                                set upstream_source whitelist
                             end
                         end
                     end
+
                     if test -z "$upstream"
-                        echo "Cannot detect upstream branch. Set tracking with: git branch -u origin/<branch>"
-                        return 1
-                    end
-                    echo "Upstream: origin/$upstream"
-
-                    # Fetch and merge (fetch in worktree so its tracking refs update)
-                    echo "Fetching origin/$upstream..."
-                    if not git fetch origin "$upstream"
-                        echo "Fetch failed"
+                        echo "Cannot detect sync source. Set tracking with: git branch -u origin/<branch>"
+                        echo "Or stamp a parent: git config branch.$current_branch.wt-parent <branch>"
                         return 1
                     end
 
-                    echo "Merging origin/$upstream into current branch..."
-                    git merge "origin/$upstream" --no-edit --no-verify
+                    # Decide whether to fetch from origin/<upstream> or merge a local ref.
+                    # wt-parent may point to a local-only branch (feature-on-feature WIP).
+                    set -l merge_ref
+                    if git show-ref --verify --quiet "refs/remotes/origin/$upstream"
+                        echo "Sync source: origin/$upstream (via $upstream_source)"
+                        echo "Fetching origin/$upstream..."
+                        if not git fetch origin "$upstream"
+                            echo "Fetch failed"
+                            return 1
+                        end
+                        set merge_ref "origin/$upstream"
+                    else if git show-ref --verify --quiet "refs/heads/$upstream"
+                        echo "Sync source: $upstream (local, via $upstream_source — no origin/$upstream)"
+                        set merge_ref "$upstream"
+                    else
+                        echo "Sync source resolved to '$upstream' (via $upstream_source) but no such ref exists locally or on origin"
+                        return 1
+                    end
+
+                    echo "Merging $merge_ref into current branch..."
+                    git merge "$merge_ref" --no-edit --no-verify
                     # Let git merge report success/conflict
 
                 case push
