@@ -38,7 +38,7 @@ fisher remove abrosimov/fish-weft
 | `fzf` | `k` interactive pickers | Without fzf, only the explicit-name forms work. |
 | `gh` (GitHub CLI) | `wt status` | Reads PR state for each worktree. |
 | `helm` | `k helm …` | Only for the helm subcommands. |
-| `jq` | `k get-secret --decode` | Used to base64-decode secret values. |
+| `jq` | `k get-secret --decode`, `proj wt fix-claude-links` | Base64-decode for secrets; `settings.local.json` subset check for `fix-claude-links` (the migration degrades gracefully if `jq` is absent — it just marks divergence as `unknown` and asks for manual review). |
 | `mongosh` | `kms` | Mongo shell into the registered pod. |
 | [`Tide`](https://github.com/IlanCosman/tide) prompt | Custom PWD prompt segment | **Optional.** The plugin auto-registers a `proj_pwd` segment when Tide is present (see [Tide integration](#tide-integration)). |
 
@@ -106,11 +106,12 @@ $AION_AUTOPOIESEON/<project>/
 | `proj wt push` | `git push -u origin <current-branch>`. |
 | `proj wt ls` | List worktrees (delegates to `git worktree list`). |
 | `proj wt status` | Per-worktree summary with ahead-of-default count and `gh pr view` state. |
-| `proj wt rm [-f] <name>` | Remove the worktree and its branch (`-d` by default; `-f` upgrades to `-D`). |
-| `proj wt clean` | Remove every fully-merged worktree. |
-| `proj wt <name>` | `cd` into a worktree directory. |
+| `proj wt rm [-f] <name>` | Remove the worktree and its branch (`-d` by default; `-f` upgrades to `-D`). Without `-f`, refuses if the worktree has uncommitted user changes; managed symlinks (from `__proj_wt_link_claude` / `.wtfiles`) are cleaned silently first. |
+| `proj wt clean [--age <days>]` | Remove fully-merged worktrees and, by default, also stale worktrees (no commits in 30+ days, upstream tracked, nothing unpushed). `--age 0` disables age-based GC. A `.wtkeep` file at the worktree root unconditionally skips it. |
+| `proj wt fix-claude-links [--apply] [<project>]` | Migrate existing worktrees to symlinked `.claude/` + `CLAUDE.md` (see the [Claude inheritance](#claude-inheritance) section). Dry-run by default; `--apply` performs changes. With no `<project>`, walks every new-style project under the workspace root. |
+| `proj wt <name>` | `cd` into a worktree directory (accepts both `feature/login` and `feature-login`). |
 
-Branch names containing `/` get sanitised in the directory: `feature/login` → `<project>/feature-login/`.
+Branch names containing `/` get sanitised in the directory: `feature/login` → `<project>/feature-login/`. `wt rm` and `wt <name>` mirror the sanitisation, so the original slash form keeps working.
 
 ### `.wtfiles` manifest
 
@@ -122,7 +123,25 @@ Verbs:
 .env                # bare path → symlink (default)
 link data/fixtures  # explicit symlink
 copy config/local   # copy instead — for entries that must diverge per worktree
+claude              # link .claude/ and CLAUDE.md from the wrapper (default)
+claude copy         # copy .claude/ and CLAUDE.md instead (per-worktree divergence)
 ```
+
+The `claude` pseudo-entry is special: it doesn't reference a path inside `base/`, it controls the [Claude inheritance](#claude-inheritance) behaviour for the wrapper-level `.claude/` directory and `CLAUDE.md` file.
+
+### Claude inheritance
+
+New-style projects can place `.claude/` and `CLAUDE.md` at the wrapper level (sibling of `base/`). On `wt add` / `wt fork`, `proj` injects them into the new worktree as relative symlinks by default (`../.claude` and `../CLAUDE.md`), so every worktree sees the same configuration without duplication. Override per project with a `claude copy` entry in `.wtfiles` when a worktree needs to diverge.
+
+For projects that pre-date this behaviour, `proj wt fix-claude-links` walks existing worktrees and migrates them:
+
+- **Missing in worktree** → create symlink.
+- **Already a symlink** → skip.
+- **Empty `.claude/`** → remove and symlink.
+- **Only `settings.local.json`** → if its top-level keys are a subset of the wrapper's, remove and symlink; otherwise flag for manual merge (requires `jq` for the subset check — degrades to "manual merge" without it).
+- **Real `CLAUDE.md` file or `.claude/` with other entries** → leave untouched and report.
+
+Dry-run by default; pass `--apply` to perform changes. Pass a `<project>` name to scope the migration to one project, or omit it to walk every new-style project under `$AION_AUTOPOIESEON`.
 
 ---
 
