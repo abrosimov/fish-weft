@@ -20,7 +20,10 @@ complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a fork 
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a sync -d 'Merge upstream into current worktree'
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a push -d 'Push current branch to origin'
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a ls -d 'List worktrees'
+complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a status -d 'Show worktrees with PR status'
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a rm -d 'Remove worktree'
+complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a clean -d 'Remove merged + stale worktrees'
+complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a fix-claude-links -d 'Migrate worktrees to symlinked .claude/ + CLAUDE.md'
 
 # proj wt <name> — worktree names as cd shortcuts
 complete -c proj -n '__proj_seen_wt; and not __proj_seen_wt_subcommand' -a '(__proj_worktree_names)'
@@ -34,3 +37,10 @@ complete -c proj -n '__proj_seen_wt_add' -l from -d 'Base branch'
 # proj wt rm: complete with worktree names and -f flag
 complete -c proj -n '__proj_seen_wt_rm' -a '(__proj_worktree_names)'
 complete -c proj -n '__proj_seen_wt_rm' -s f -l force -d 'Force remove worktree and delete unmerged branch'
+
+# proj wt clean: --age flag
+complete -c proj -n '__proj_seen_wt_clean' -l age -d 'Stale-worktree threshold in days (default 30, 0 disables)'
+
+# proj wt fix-claude-links: --apply flag and project names as positional arg
+complete -c proj -n '__proj_seen_wt_fix_claude_links' -l apply -d 'Perform changes (default is dry-run)'
+complete -c proj -n '__proj_seen_wt_fix_claude_links' -a '(set -l root (__fish_weft_workspace_root); and test -d "$root"; and for d in $root/*/; basename $d; end)'
